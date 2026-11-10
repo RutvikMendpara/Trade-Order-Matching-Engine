@@ -1,0 +1,23 @@
+engine:
+  shards: 2
+  journal-dir: data/journal
+  fsync: false
+  price-band-percent: 10
+  demo: false
+  symbols:
+    - name: INFY
+      tick-size: 0.05
+      reference-price: 1500.00
+      max-quantity: 100000
+    - name: TCS
+      tick-size: 0.05
+      reference-price: 3400.00
+      max-quantity: 50000
+    - name: RELIANCE
+      tick-size: 0.05
+      reference-price: 2900.00
+      max-quantity: 100000
+    - name: HDFCBANK
+      tick-size: 0.05
+      reference-price: 1650.00
+      max-quantity: 100000
