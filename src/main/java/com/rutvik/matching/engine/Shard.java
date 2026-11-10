@@ -7,10 +7,8 @@ import com.rutvik.matching.book.OrderBook;
 import com.rutvik.matching.book.Trade;
 import java.util.ArrayList;
 import java.util.HashMap;
-import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
-import java.util.Set;
 import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.CompletableFuture;
@@ -150,7 +148,7 @@ final class Shard implements Runnable, BookListener {
     public void run() {
         List<Task> batch = new ArrayList<>(BATCH);
         List<Reply> replies = new ArrayList<>(BATCH);
-        Set<SymbolState> dirty = new LinkedHashSet<>();
+        List<SymbolState> dirty = new ArrayList<>(); // only a few symbols per shard, a list is fine
         boolean running = true;
 
         while (running) {
@@ -208,14 +206,16 @@ final class Shard implements Runnable, BookListener {
         }
     }
 
-    private void handle(Submit submit, List<Reply> replies, Set<SymbolState> dirty) {
+    private void handle(Submit submit, List<Reply> replies, List<SymbolState> dirty) {
         Command command = submit.command();
         SymbolState state = symbols.get(command.symbol());
         try {
             long seq = ++state.sequence;
             if (state.log != null) {
                 state.log.append(seq, command);
-                dirty.add(state);
+                if (!dirty.contains(state)) {
+                    dirty.add(state);
+                }
             }
             apply(state, command);
             state.sinceSnapshot++;

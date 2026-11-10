@@ -5,8 +5,9 @@ import com.rutvik.matching.book.Side;
 import com.rutvik.matching.book.TimeInForce;
 
 /**
- * One command per line, comma separated. Not the fastest format but you can
- * open the file and read it, which has been worth it while debugging.
+ * One command per line, comma separated. Text instead of binary because you can
+ * just open the file and read it, which has been worth it while debugging.
+ * Encoding writes straight into a reused byte buffer, so it's still garbage free.
  * Client ids are validated at the gateway so they never contain commas.
  */
 final class JournalCodec {
@@ -17,15 +18,25 @@ final class JournalCodec {
     private JournalCodec() {
     }
 
+    static void encode(long seq, Command command, LineBuffer out) {
+        out.put(seq).put(',');
+        switch (command) {
+            case Command.NewOrder n -> out.put('N').put(',').put(n.orderId()).put(',').put(n.clientId()).put(',')
+                    .put(n.clientOrderId()).put(',').put(n.symbol()).put(',').put(n.side().name()).put(',')
+                    .put(n.type().name()).put(',').put(n.timeInForce().name()).put(',').put(n.price()).put(',')
+                    .put(n.quantity());
+            case Command.CancelOrder c -> out.put('C').put(',').put(c.orderId()).put(',').put(c.symbol());
+            case Command.AmendOrder a -> out.put('A').put(',').put(a.orderId()).put(',').put(a.symbol()).put(',')
+                    .put(a.quantity()).put(',').put(a.price());
+            case Command.EndOfDay e -> out.put('E').put(',').put(e.symbol());
+        }
+        out.put('\n');
+    }
+
     static String encode(long seq, Command command) {
-        return switch (command) {
-            case Command.NewOrder n -> String.join(",", Long.toString(seq), "N", Long.toString(n.orderId()),
-                    n.clientId(), n.clientOrderId(), n.symbol(), n.side().name(), n.type().name(),
-                    n.timeInForce().name(), Long.toString(n.price()), Long.toString(n.quantity()));
-            case Command.CancelOrder c -> seq + ",C," + c.orderId() + "," + c.symbol();
-            case Command.AmendOrder a -> seq + ",A," + a.orderId() + "," + a.symbol() + "," + a.quantity() + "," + a.price();
-            case Command.EndOfDay e -> seq + ",E," + e.symbol();
-        };
+        LineBuffer line = new LineBuffer(128);
+        encode(seq, command, line);
+        return line.toString().stripTrailing();
     }
 
     static Entry decode(String line) {

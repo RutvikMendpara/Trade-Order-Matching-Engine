@@ -1,10 +1,8 @@
 package com.rutvik.matching.engine;
 
-import java.io.BufferedWriter;
 import java.io.Closeable;
 import java.io.FileOutputStream;
 import java.io.IOException;
-import java.io.OutputStreamWriter;
 import java.io.UncheckedIOException;
 import java.nio.channels.FileChannel;
 import java.nio.charset.StandardCharsets;
@@ -27,8 +25,7 @@ public final class Journal implements Closeable {
     private final Path file;
     private final boolean fsync;
     private final FileOutputStream out;
-    private final BufferedWriter writer;
-    private boolean dirty;
+    private final LineBuffer buffer = new LineBuffer(1 << 16);
 
     public Journal(Path file, boolean fsync) {
         this.file = file;
@@ -36,32 +33,36 @@ public final class Journal implements Closeable {
         try {
             Files.createDirectories(file.toAbsolutePath().getParent());
             this.out = new FileOutputStream(file.toFile(), true);
-            this.writer = new BufferedWriter(new OutputStreamWriter(out, StandardCharsets.UTF_8), 1 << 16);
         } catch (IOException e) {
             throw new UncheckedIOException("could not open journal " + file, e);
         }
     }
 
     public void append(long seq, Command command) {
-        try {
-            writer.write(JournalCodec.encode(seq, command));
-            writer.write('\n');
-            dirty = true;
-        } catch (IOException e) {
-            throw new UncheckedIOException(e);
+        if (buffer.length > (1 << 16) - 512) {
+            write();
         }
+        JournalCodec.encode(seq, command, buffer);
     }
 
     public void flush() {
-        if (!dirty) {
+        if (buffer.length == 0) {
             return;
         }
-        try {
-            writer.flush();
-            if (fsync) {
+        write();
+        if (fsync) {
+            try {
                 out.getFD().sync();
+            } catch (IOException e) {
+                throw new UncheckedIOException(e);
             }
-            dirty = false;
+        }
+    }
+
+    private void write() {
+        try {
+            out.write(buffer.bytes, 0, buffer.length);
+            buffer.clear();
         } catch (IOException e) {
             throw new UncheckedIOException(e);
         }
@@ -104,7 +105,7 @@ public final class Journal implements Closeable {
     public void close() {
         try {
             flush();
-            writer.close();
+            out.close();
         } catch (IOException e) {
             throw new UncheckedIOException(e);
         }
