@@ -1,0 +1,124 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Order Book</title>
+<style>
+  body { margin: 0; font: 14px/1.4 -apple-system, "Segoe UI", Roboto, sans-serif; background: #0f1419; color: #d8dee4; }
+  header { display: flex; align-items: center; gap: 16px; padding: 14px 24px; border-bottom: 1px solid #222b33; }
+  header h1 { font-size: 16px; margin: 0 12px 0 0; font-weight: 600; }
+  .tabs button { background: none; border: 1px solid #2c3640; color: #9aa7b2; padding: 5px 12px; border-radius: 4px; cursor: pointer; margin-right: 6px; }
+  .tabs button.on { background: #1f2a33; color: #fff; border-color: #44525e; }
+  .stats { margin-left: auto; display: flex; gap: 24px; font-variant-numeric: tabular-nums; }
+  .stats span { color: #7d8a96; margin-right: 6px; }
+  main { display: grid; grid-template-columns: 1fr 1fr 300px; gap: 20px; padding: 20px 24px; }
+  h2 { font-size: 12px; text-transform: uppercase; letter-spacing: .06em; color: #7d8a96; margin: 0 0 8px; font-weight: 600; }
+  table { width: 100%; border-collapse: collapse; font-variant-numeric: tabular-nums; }
+  th { text-align: right; color: #66727d; font-weight: 500; font-size: 12px; padding: 4px 8px; }
+  td { text-align: right; padding: 3px 8px; position: relative; }
+  td.bar { width: 45%; padding: 0; }
+  .fill { height: 18px; opacity: .25; }
+  .bid { color: #3fb68b; } .bid .fill { background: #3fb68b; margin-left: auto; }
+  .ask { color: #ff5c5c; } .ask .fill { background: #ff5c5c; }
+  .trades td { padding: 2px 8px; }
+  .ticket { margin-top: 24px; display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+  .ticket input, .ticket select { background: #161d24; border: 1px solid #2c3640; color: #d8dee4; padding: 6px 8px; border-radius: 4px; }
+  .ticket button { padding: 7px; border: 0; border-radius: 4px; color: #fff; font-weight: 600; cursor: pointer; }
+  #msg { grid-column: span 2; font-size: 12px; color: #9aa7b2; min-height: 16px; }
+  @media (max-width: 900px) { main { grid-template-columns: 1fr; } }
+</style>
+</head>
+<body>
+<header>
+  <h1>Matching Engine</h1>
+  <div class="tabs" id="tabs"></div>
+  <div class="stats">
+    <div><span>Bid</span><b class="bid" id="bid">-</b></div>
+    <div><span>Ask</span><b class="ask" id="ask">-</b></div>
+    <div><span>Spread</span><b id="spread">-</b></div>
+    <div><span>Last</span><b id="last">-</b></div>
+  </div>
+</header>
+<main>
+  <section>
+    <h2>Bids</h2>
+    <table><thead><tr><th></th><th>Orders</th><th>Qty</th><th>Price</th></tr></thead><tbody id="bids"></tbody></table>
+  </section>
+  <section>
+    <h2>Asks</h2>
+    <table><thead><tr><th style="text-align:left">Price</th><th>Qty</th><th>Orders</th><th></th></tr></thead><tbody id="asks"></tbody></table>
+  </section>
+  <section>
+    <h2>Trades</h2>
+    <table class="trades"><tbody id="trades"></tbody></table>
+    <form class="ticket" id="ticket">
+      <input name="price" placeholder="Price" required>
+      <input name="quantity" placeholder="Qty" type="number" min="1" required>
+      <button type="button" data-side="BUY" style="background:#2b8a67">Buy</button>
+      <button type="button" data-side="SELL" style="background:#c94444">Sell</button>
+      <div id="msg"></div>
+    </form>
+  </section>
+</main>
+<script>
+  let symbol;
+  let n = 0;
+  const $ = id => document.getElementById(id);
+  const fmt = p => p == null ? '-' : Number(p).toFixed(2);
+
+  async function init() {
+    const symbols = await (await fetch('/symbols')).json();
+    $('tabs').innerHTML = symbols.map(s => `<button data-s="${s}">${s}</button>`).join('');
+    $('tabs').onclick = e => { if (e.target.dataset.s) select(e.target.dataset.s); };
+    select(symbols[0]);
+    setInterval(refresh, 500);
+  }
+
+  function select(s) {
+    symbol = s;
+    document.querySelectorAll('.tabs button').forEach(b => b.classList.toggle('on', b.dataset.s === s));
+    refresh();
+  }
+
+  async function refresh() {
+    const [book, trades] = await Promise.all([
+      fetch(`/book/${symbol}?depth=12`).then(r => r.json()),
+      fetch(`/trades/${symbol}`).then(r => r.json())
+    ]);
+    $('bid').textContent = fmt(book.bestBid);
+    $('ask').textContent = fmt(book.bestAsk);
+    $('spread').textContent = fmt(book.spread);
+    $('last').textContent = fmt(book.lastPrice);
+
+    const max = Math.max(1, ...book.bids.map(l => l.quantity), ...book.asks.map(l => l.quantity));
+    const bar = q => `<div class="fill" style="width:${q / max * 100}%"></div>`;
+    $('bids').innerHTML = book.bids.map(l =>
+      `<tr class="bid"><td class="bar">${bar(l.quantity)}</td><td>${l.orders}</td><td>${l.quantity}</td><td>${fmt(l.price)}</td></tr>`).join('');
+    $('asks').innerHTML = book.asks.map(l =>
+      `<tr class="ask"><td style="text-align:left">${fmt(l.price)}</td><td>${l.quantity}</td><td>${l.orders}</td><td class="bar">${bar(l.quantity)}</td></tr>`).join('');
+    $('trades').innerHTML = trades.slice(0, 18).map(t =>
+      `<tr class="${t.aggressor === 'BUY' ? 'bid' : 'ask'}"><td>${fmt(t.price)}</td><td>${t.quantity}</td><td style="color:#66727d">#${t.tradeId}</td></tr>`).join('');
+  }
+
+  $('ticket').onclick = async e => {
+    const side = e.target.dataset.side;
+    if (!side) return;
+    const f = new FormData($('ticket'));
+    const res = await fetch('/orders', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({
+        clientId: 'web', clientOrderId: 'web' + Date.now() + (n++), symbol, side,
+        price: f.get('price'), quantity: Number(f.get('quantity'))
+      })
+    });
+    const body = await res.json();
+    $('msg').textContent = body.error || `${body.status}${body.reason ? ' - ' + body.reason : ''}`;
+    refresh();
+  };
+
+  init();
+</script>
+</body>
+</html>
