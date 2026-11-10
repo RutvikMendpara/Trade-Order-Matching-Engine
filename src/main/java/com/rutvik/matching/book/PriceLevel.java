@@ -7,6 +7,7 @@ package com.rutvik.matching.book;
 final class PriceLevel {
 
     final long price;
+    final Long key; // boxed once, reused for map removes
     Order head;
     Order tail;
     long totalQuantity;
@@ -14,6 +15,7 @@ final class PriceLevel {
 
     PriceLevel(long price) {
         this.price = price;
+        this.key = price;
     }
 
     void append(Order order) {

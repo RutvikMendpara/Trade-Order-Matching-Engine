@@ -3,9 +3,7 @@ package com.rutvik.matching.book;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.Comparator;
-import java.util.HashMap;
 import java.util.List;
-import java.util.Map;
 import java.util.NavigableMap;
 import java.util.TreeMap;
 
@@ -20,7 +18,7 @@ public final class OrderBook {
 
     final NavigableMap<Long, PriceLevel> bids = new TreeMap<>(Comparator.reverseOrder());
     final NavigableMap<Long, PriceLevel> asks = new TreeMap<>();
-    private final Map<Long, Order> orders = new HashMap<>();
+    private final LongMap<Order> orders = new LongMap<>(1 << 16);
 
     long nextTradeId = 1;
     long nextPriority = 1;
@@ -89,12 +87,12 @@ public final class OrderBook {
 
     public void expireDayOrders() {
         List<Order> expiring = new ArrayList<>();
-        for (Order order : orders.values()) {
+        orders.forEachValue(order -> {
             if (order.timeInForce() == TimeInForce.DAY) {
                 expiring.add(order);
             }
-        }
-        // HashMap order isn't stable, sort so replays give identical output
+        });
+        // hash order isn't meaningful, sort so replays give identical output
         expiring.sort(Comparator.comparingLong(Order::id));
         for (Order order : expiring) {
             orders.remove(order.id());
@@ -145,7 +143,7 @@ public final class OrderBook {
             }
 
             if (level.isEmpty()) {
-                opposite.remove(level.price);
+                opposite.remove(level.key);
             }
         }
         return false;
@@ -193,7 +191,7 @@ public final class OrderBook {
         PriceLevel level = side.get(order.price);
         if (level == null) {
             level = new PriceLevel(order.price);
-            side.put(order.price, level);
+            side.put(level.key, level);
         }
         order.priority = nextPriority++;
         level.append(order);
@@ -206,7 +204,7 @@ public final class OrderBook {
         PriceLevel level = side.get(order.price);
         if (level == null) {
             level = new PriceLevel(order.price);
-            side.put(order.price, level);
+            side.put(level.key, level);
         }
         level.append(order);
         orders.put(order.id(), order);
@@ -228,7 +226,7 @@ public final class OrderBook {
         PriceLevel level = order.level;
         level.remove(order);
         if (level.isEmpty()) {
-            (order.side() == Side.BUY ? bids : asks).remove(level.price);
+            (order.side() == Side.BUY ? bids : asks).remove(level.key);
         }
     }
 
