@@ -18,13 +18,13 @@ public final class OrderBook {
     private final String symbol;
     private final BookListener listener;
 
-    private final NavigableMap<Long, PriceLevel> bids = new TreeMap<>(Comparator.reverseOrder());
-    private final NavigableMap<Long, PriceLevel> asks = new TreeMap<>();
+    final NavigableMap<Long, PriceLevel> bids = new TreeMap<>(Comparator.reverseOrder());
+    final NavigableMap<Long, PriceLevel> asks = new TreeMap<>();
     private final Map<Long, Order> orders = new HashMap<>();
 
-    private long nextTradeId = 1;
-    private long nextPriority = 1;
-    private long lastTradePrice;
+    long nextTradeId = 1;
+    long nextPriority = 1;
+    long lastTradePrice;
 
     public OrderBook(String symbol, BookListener listener) {
         this.symbol = symbol;
@@ -198,6 +198,30 @@ public final class OrderBook {
         order.priority = nextPriority++;
         level.append(order);
         orders.put(order.id(), order);
+    }
+
+    // snapshot restore: orders arrive in queue order, so appending rebuilds FIFO exactly
+    void restore(Order order) {
+        NavigableMap<Long, PriceLevel> side = order.side() == Side.BUY ? bids : asks;
+        PriceLevel level = side.get(order.price);
+        if (level == null) {
+            level = new PriceLevel(order.price);
+            side.put(order.price, level);
+        }
+        level.append(order);
+        orders.put(order.id(), order);
+    }
+
+    // lets downstream read models learn about orders that came back from a snapshot
+    void announceResting() {
+        for (NavigableMap<Long, PriceLevel> side : List.of(bids, asks)) {
+            for (PriceLevel level : side.values()) {
+                for (Order o = level.head; o != null; o = o.next) {
+                    OrderStatus status = o.filled > 0 ? OrderStatus.PARTIALLY_FILLED : OrderStatus.NEW;
+                    report(o, status, 0, 0, "restored from snapshot");
+                }
+            }
+        }
     }
 
     private void unlink(Order order) {

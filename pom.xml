@@ -83,7 +83,7 @@
                     </annotationProcessorPaths>
                 </configuration>
             </plugin>
-            <!-- ./mvnw test-compile exec:exec@jmh   and   ./mvnw test-compile exec:exec@load -->
+            <!-- ./mvnw test-compile exec:exec@jmh  (or @load, @restart) -->
             <plugin>
                 <groupId>org.codehaus.mojo</groupId>
                 <artifactId>exec-maven-plugin</artifactId>
@@ -112,6 +112,18 @@
                                 <argument>-classpath</argument>
                                 <classpath/>
                                 <argument>com.rutvik.matching.bench.LoadGenerator</argument>
+                            </arguments>
+                        </configuration>
+                    </execution>
+                    <execution>
+                        <id>restart</id>
+                        <configuration>
+                            <arguments>
+                                <argument>-Xms4g</argument>
+                                <argument>-Xmx4g</argument>
+                                <argument>-classpath</argument>
+                                <classpath/>
+                                <argument>com.rutvik.matching.bench.RestartBenchmark</argument>
                             </arguments>
                         </configuration>
                     </execution>

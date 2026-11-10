@@ -57,7 +57,7 @@ class EngineTest {
         }
     }
 
-    private static List<Command> randomFlow(long seed, int count) {
+    static List<Command> randomFlow(long seed, int count) {
         Random random = new Random(seed);
         List<Command> commands = new ArrayList<>();
         long id = 1;
@@ -98,14 +98,14 @@ class EngineTest {
             engine.start();
             runAll(engine, flow);
             for (String s : SYMBOLS) {
-                before.add(engine.snapshot(s, 1000).get());
+                before.add(engine.depth(s, 1000).get());
             }
         }
 
         try (MatchingEngine restarted = new MatchingEngine(SYMBOLS, 2, dir, false)) {
             restarted.start();
             for (int i = 0; i < SYMBOLS.size(); i++) {
-                assertThat(restarted.snapshot(SYMBOLS.get(i), 1000).get()).isEqualTo(before.get(i));
+                assertThat(restarted.depth(SYMBOLS.get(i), 1000).get()).isEqualTo(before.get(i));
             }
             assertThat(restarted.highestOrderId()).isEqualTo(flow.stream()
                     .filter(c -> c instanceof Command.NewOrder).count());
@@ -141,12 +141,12 @@ class EngineTest {
             engine.submit(new Command.NewOrder(1, "a", "o1", "INFY", Side.BUY, OrderType.LIMIT,
                     TimeInForce.GTC, 10_000, 10)).join();
         }
-        Path journal = dir.resolve("INFY.journal");
+        Path journal = dir.resolve("INFY-000000000001.journal");
         Files.writeString(journal, "2,N,2,b,o2,INF", StandardOpenOption.APPEND);
 
         try (MatchingEngine engine = new MatchingEngine(List.of("INFY"), 1, dir, false)) {
             engine.start();
-            assertThat(engine.snapshot("INFY", 5).join().bids()).hasSize(1);
+            assertThat(engine.depth("INFY", 5).join().bids()).hasSize(1);
             engine.submit(new Command.CancelOrder(1, "INFY")).join();
         }
         assertThat(Files.readAllLines(journal)).containsExactly(
@@ -205,7 +205,7 @@ class EngineTest {
     void unknownSymbolIsRefused() {
         try (MatchingEngine engine = MatchingEngine.inMemory(SYMBOLS, 1)) {
             engine.start();
-            org.assertj.core.api.Assertions.assertThatThrownBy(() -> engine.snapshot("NOPE", 5))
+            org.assertj.core.api.Assertions.assertThatThrownBy(() -> engine.depth("NOPE", 5))
                     .isInstanceOf(IllegalArgumentException.class);
         }
     }

@@ -23,37 +23,69 @@ public final class MatchingEngine implements AutoCloseable {
     private final List<Shard> shards = new ArrayList<>();
     private final Map<String, Shard> shardBySymbol = new HashMap<>();
     private final List<BookListener> listeners = new CopyOnWriteArrayList<>();
+    private final boolean rejectWhenFull;
     private volatile boolean started;
 
-    public MatchingEngine(List<String> symbols, int shardCount, Path journalDir, boolean fsync) {
+    /**
+     * @param journalDir     null = nothing written to disk
+     * @param snapshotEvery  commands per symbol between snapshots, 0 = never
+     * @param queueSize      per shard inbound queue
+     * @param rejectWhenFull true = fail fast with EngineBusyException when a queue is full, false = block the caller
+     */
+    public record Options(Path journalDir, boolean fsync, long snapshotEvery, int queueSize, boolean rejectWhenFull) {
+
+        public static Options inMemory() {
+            return new Options(null, false, 0, 1 << 16, false);
+        }
+
+        public static Options journaled(Path dir) {
+            return new Options(dir, false, 0, 1 << 16, false);
+        }
+
+        public Options withSnapshotEvery(long n) {
+            return new Options(journalDir, fsync, n, queueSize, rejectWhenFull);
+        }
+
+        public Options withQueue(int size, boolean reject) {
+            return new Options(journalDir, fsync, snapshotEvery, size, reject);
+        }
+    }
+
+    public MatchingEngine(List<String> symbols, int shardCount, Options options) {
         int count = Math.max(1, Math.min(shardCount, symbols.size()));
+        this.rejectWhenFull = options.rejectWhenFull();
         BookListener fanOut = new FanOut();
         for (int i = 0; i < count; i++) {
-            shards.add(new Shard("engine-" + i, 1 << 16, fanOut));
+            shards.add(new Shard("engine-" + i, options.queueSize(), options.snapshotEvery(), fanOut));
         }
         for (int i = 0; i < symbols.size(); i++) {
             String symbol = symbols.get(i);
             Shard shard = shards.get(i % count);
-            Journal journal = journalDir == null ? null : new Journal(journalDir.resolve(symbol + ".journal"), fsync);
-            shard.addSymbol(symbol, journal);
+            SymbolLog symbolLog = options.journalDir() == null ? null
+                    : new SymbolLog(options.journalDir(), symbol, options.fsync());
+            shard.addSymbol(symbol, symbolLog);
             shardBySymbol.put(symbol, shard);
         }
     }
 
+    public MatchingEngine(List<String> symbols, int shardCount, Path journalDir, boolean fsync) {
+        this(symbols, shardCount, new Options(journalDir, fsync, 0, 1 << 16, false));
+    }
+
     public static MatchingEngine inMemory(List<String> symbols, int shardCount) {
-        return new MatchingEngine(symbols, shardCount, null, false);
+        return new MatchingEngine(symbols, shardCount, Options.inMemory());
     }
 
     public void addListener(BookListener listener) {
         listeners.add(listener);
     }
 
-    /** Replays journals (listeners see the replayed events too) and starts the shard threads. */
+    /** Recovers from snapshot + journal (listeners see the recovered events too) and starts the shard threads. */
     public synchronized void start() {
         if (started) {
             return;
         }
-        shards.forEach(Shard::replay);
+        shards.forEach(Shard::recover);
         shards.forEach(Shard::start);
         started = true;
     }
@@ -61,12 +93,19 @@ public final class MatchingEngine implements AutoCloseable {
     public CompletableFuture<List<ExecutionReport>> submit(Command command) {
         Shard shard = shardFor(command.symbol());
         CompletableFuture<List<ExecutionReport>> reply = new CompletableFuture<>();
-        shard.enqueue(new Shard.Submit(command, reply));
+        Shard.Submit task = new Shard.Submit(command, reply);
+        if (rejectWhenFull) {
+            if (!shard.tryEnqueue(task)) {
+                reply.completeExceptionally(new EngineBusyException(command.symbol()));
+            }
+        } else {
+            shard.enqueue(task);
+        }
         return reply;
     }
 
-    /** Snapshots go through the queue as well, so we never read a book from another thread. */
-    public CompletableFuture<BookSnapshot> snapshot(String symbol, int depth) {
+    /** Market data goes through the queue as well, so we never read a book from another thread. */
+    public CompletableFuture<BookSnapshot> depth(String symbol, int depth) {
         Shard shard = shardFor(symbol);
         CompletableFuture<BookSnapshot> reply = new CompletableFuture<>();
         shard.enqueue(new Shard.Query(symbol, depth, reply));
@@ -79,6 +118,21 @@ public final class MatchingEngine implements AutoCloseable {
 
     public Set<String> symbols() {
         return shardBySymbol.keySet();
+    }
+
+    /** Writes a snapshot of every book that changed since its last one. */
+    public void saveSnapshots() {
+        List<CompletableFuture<Void>> pending = new ArrayList<>();
+        for (Shard shard : shards) {
+            CompletableFuture<Void> done = new CompletableFuture<>();
+            shard.enqueue(new Shard.SnapshotNow(done));
+            pending.add(done);
+        }
+        pending.forEach(CompletableFuture::join);
+    }
+
+    public int queued(String symbol) {
+        return shardFor(symbol).queued();
     }
 
     public long highestOrderId() {
