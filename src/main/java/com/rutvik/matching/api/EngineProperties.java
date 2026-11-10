@@ -10,6 +10,8 @@ public record EngineProperties(
         int shards,
         Path journalDir,
         boolean fsync,
+        long snapshotEvery,
+        int queueSize,
         int priceBandPercent,
         boolean demo,
         List<SymbolProperties> symbols) {

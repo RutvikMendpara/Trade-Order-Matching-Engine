@@ -1,5 +1,6 @@
 package com.rutvik.matching.api;
 
+import com.rutvik.matching.engine.EngineBusyException;
 import java.util.Map;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
@@ -22,6 +23,12 @@ class ApiErrors {
     @ExceptionHandler(HttpMessageNotReadableException.class)
     ResponseEntity<Map<String, String>> unreadable(HttpMessageNotReadableException e) {
         return ResponseEntity.badRequest().body(Map.of("error", "malformed request body"));
+    }
+
+    @ExceptionHandler(EngineBusyException.class)
+    ResponseEntity<Map<String, String>> busy(EngineBusyException e) {
+        return ResponseEntity.status(HttpStatus.SERVICE_UNAVAILABLE).header("Retry-After", "1")
+                .body(Map.of("error", e.getMessage()));
     }
 
     @ExceptionHandler(IllegalStateException.class)

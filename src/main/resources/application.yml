@@ -2,6 +2,8 @@ engine:
   shards: 2
   journal-dir: data/journal
   fsync: false
+  snapshot-every: 1000000   # commands per symbol
+  queue-size: 65536         # per shard, full queue -> 503
   price-band-percent: 10
   demo: false
   symbols:

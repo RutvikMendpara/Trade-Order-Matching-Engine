@@ -6,6 +6,7 @@ import com.rutvik.matching.book.ExecutionReport;
 import com.rutvik.matching.book.OrderType;
 import com.rutvik.matching.book.Trade;
 import com.rutvik.matching.engine.Command;
+import com.rutvik.matching.engine.EngineBusyException;
 import com.rutvik.matching.engine.MatchingEngine;
 import java.util.ArrayList;
 import java.util.Deque;
@@ -63,8 +64,14 @@ public class OrderService implements BookListener {
             recentTrades.put(s.name(), new ConcurrentLinkedDeque<>());
         }
         engine.addListener(this);
-        engine.start(); // replays the journal through onReport/onTrade, rebuilding everything below
+        engine.start(); // recovery goes through onReport/onTrade, rebuilding everything below
         this.nextOrderId = new AtomicLong(engine.highestOrderId() + 1);
+        for (String symbol : rules.keySet()) {
+            long last = engine.depth(symbol, 0).join().lastTradePrice();
+            if (last > 0) {
+                lastPrices.putIfAbsent(symbol, last);
+            }
+        }
     }
 
     public Result submit(Dtos.OrderRequest request) {
@@ -167,13 +174,18 @@ public class OrderService implements BookListener {
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
             throw new IllegalStateException(e);
-        } catch (ExecutionException | TimeoutException e) {
+        } catch (ExecutionException e) {
+            if (e.getCause() instanceof EngineBusyException busy) {
+                throw busy;
+            }
+            throw new IllegalStateException("engine failed", e.getCause());
+        } catch (TimeoutException e) {
             throw new IllegalStateException("engine did not respond", e);
         }
     }
 
     public BookSnapshot book(String symbol, int depth) {
-        return await(engine.snapshot(symbol, depth));
+        return await(engine.depth(symbol, depth));
     }
 
     public boolean hasSymbol(String symbol) {

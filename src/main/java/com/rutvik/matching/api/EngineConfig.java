@@ -11,6 +11,9 @@ class EngineConfig {
     @Bean(destroyMethod = "close")
     MatchingEngine matchingEngine(EngineProperties props) {
         var symbols = props.symbols().stream().map(EngineProperties.SymbolProperties::name).toList();
-        return new MatchingEngine(symbols, props.shards(), props.journalDir(), props.fsync());
+        // the gateway rejects with 503 when a shard queue is full instead of piling up latency
+        var options = new MatchingEngine.Options(props.journalDir(), props.fsync(), props.snapshotEvery(),
+                props.queueSize(), true);
+        return new MatchingEngine(symbols, props.shards(), options);
     }
 }
