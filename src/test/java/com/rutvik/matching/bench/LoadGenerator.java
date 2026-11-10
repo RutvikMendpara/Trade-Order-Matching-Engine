@@ -8,12 +8,15 @@ import com.rutvik.matching.book.Side;
 import com.rutvik.matching.book.TimeInForce;
 import com.rutvik.matching.engine.Command;
 import com.rutvik.matching.engine.MatchingEngine;
+import java.lang.management.GarbageCollectorMXBean;
+import java.lang.management.ManagementFactory;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.List;
 import java.util.SplittableRandom;
+import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.Semaphore;
 import org.HdrHistogram.Histogram;
@@ -40,6 +43,71 @@ public class LoadGenerator {
         wholeEngine(engineOrders / 5, 256, false);
         wholeEngine(engineOrders, 256, true);
         wholeEngine(engineOrders / 4, 1, true);
+        flood(engineOrders, 1 << 16, false);
+        flood(engineOrders, 1024, true);
+    }
+
+    /**
+     * Producers send as fast as they can with no in-flight limit. With a big blocking
+     * queue everything gets accepted but latency is however long the queue is. With a
+     * small queue that rejects when full, accepted orders stay fast and the rest get
+     * told to retry - that's the trade the REST gateway makes (503 + Retry-After).
+     */
+    static void flood(int count, int queueSize, boolean reject) throws Exception {
+        Path dir = Files.createTempDirectory("journal");
+        int producers = SYMBOLS.length;
+        int perProducer = count / producers;
+        List<List<Command>> flows = new ArrayList<>();
+        for (int p = 0; p < producers; p++) {
+            flows.add(flow(perProducer, 200 + p, SYMBOLS[p], 1 + (long) p * perProducer * 2));
+        }
+
+        Recorder recorder = new Recorder(3);
+        java.util.concurrent.atomic.LongAdder rejected = new java.util.concurrent.atomic.LongAdder();
+        var options = MatchingEngine.Options.journaled(dir).withQueue(queueSize, reject);
+        try (MatchingEngine engine = new MatchingEngine(List.of(SYMBOLS), 2, options)) {
+            engine.start();
+            List<Thread> threads = new ArrayList<>();
+            List<CompletableFuture<?>> last = java.util.Collections.synchronizedList(new ArrayList<>());
+            for (int p = 0; p < producers; p++) {
+                List<Command> commands = flows.get(p);
+                Thread t = new Thread(() -> {
+                    CompletableFuture<?> f = null;
+                    for (Command c : commands) {
+                        long t0 = System.nanoTime();
+                        f = engine.submit(c).whenComplete((r, e) -> {
+                            if (e == null) {
+                                recorder.recordValue(System.nanoTime() - t0);
+                            } else {
+                                rejected.increment();
+                            }
+                        });
+                    }
+                    last.add(f);
+                });
+                threads.add(t);
+                t.start();
+            }
+            for (Thread t : threads) {
+                t.join();
+            }
+            for (CompletableFuture<?> f : last) {
+                f.handle((r, e) -> null).join();
+            }
+            for (String symbol : SYMBOLS) {
+                engine.depth(symbol, 1).join(); // queued behind everything else, so this waits for the backlog
+            }
+        }
+        try (var files = Files.walk(dir)) {
+            files.sorted(Comparator.reverseOrder()).forEach(f -> f.toFile().delete());
+        }
+
+        Histogram h = recorder.getIntervalHistogram();
+        System.out.printf("%nflood, queue %,d per shard, %s when full: %,d sent, %,d rejected (%.1f%%)%n",
+                queueSize, reject ? "reject" : "block", perProducer * producers, rejected.sum(),
+                100.0 * rejected.sum() / (perProducer * producers));
+        System.out.printf("  accepted p50 %.0f us, p99 %.0f us, p99.9 %.0f us%n", h.getValueAtPercentile(50) / 1000.0,
+                h.getValueAtPercentile(99) / 1000.0, h.getValueAtPercentile(99.9) / 1000.0);
     }
 
     // mix: ~60% limit orders around the mid, ~30% cancels, ~5% amends, ~5% market orders
@@ -84,6 +152,8 @@ public class LoadGenerator {
         Histogram latency = new Histogram(10_000_000_000L, 3);
 
         System.gc();
+        Gc gc = Gc.start();
+        long allocatedBefore = THREADS.getCurrentThreadAllocatedBytes();
         long start = System.nanoTime();
         for (int i = 0; i < count; i++) {
             long t0 = System.nanoTime();
@@ -96,11 +166,14 @@ public class LoadGenerator {
             latency.recordValue(System.nanoTime() - t0);
         }
         long elapsed = System.nanoTime() - start;
+        long allocated = THREADS.getCurrentThreadAllocatedBytes() - allocatedBefore;
 
         if (print) {
             System.out.printf("order book only: %,d commands, %,d trades, %,d resting at the end%n",
                     count, counter.trades, book.orderCount());
             print(count, elapsed, latency);
+            System.out.printf("  garbage  %,d bytes/command (orders pre-built, not counted)%n", allocated / count);
+            gc.print();
         }
     }
 
@@ -117,6 +190,9 @@ public class LoadGenerator {
 
         Recorder recorder = new Recorder(3);
         long elapsed;
+        System.gc();
+        Gc gc = Gc.start();
+        long allocatedBefore = THREADS.getTotalThreadAllocatedBytes();
         try (MatchingEngine engine = new MatchingEngine(List.of(SYMBOLS), 2, dir, false)) {
             engine.start();
             CountDownLatch done = new CountDownLatch(producers);
@@ -144,6 +220,7 @@ public class LoadGenerator {
             done.await();
             elapsed = System.nanoTime() - start;
         }
+        long allocated = THREADS.getTotalThreadAllocatedBytes() - allocatedBefore;
 
         long journalBytes;
         try (var files = Files.list(dir)) {
@@ -157,6 +234,8 @@ public class LoadGenerator {
             System.out.printf("%nfull engine: %,d commands, %d symbols on 2 shards, %d producers, %d in flight each, journal %,d MB%n",
                     perProducer * producers, SYMBOLS.length, producers, window, journalBytes >> 20);
             print(perProducer * producers, elapsed, recorder.getIntervalHistogram());
+            System.out.printf("  garbage  %,d bytes/command, all threads%n", allocated / (perProducer * producers));
+            gc.print();
         }
     }
 
@@ -166,6 +245,26 @@ public class LoadGenerator {
         System.out.printf("  p99  %8.2f us%n", h.getValueAtPercentile(99) / 1000.0);
         System.out.printf("  p99.9 %7.2f us%n", h.getValueAtPercentile(99.9) / 1000.0);
         System.out.printf("  max  %8.2f us%n", h.getMaxValue() / 1000.0);
+    }
+
+    static final com.sun.management.ThreadMXBean THREADS =
+            (com.sun.management.ThreadMXBean) ManagementFactory.getThreadMXBean();
+
+    record Gc(long count, long millis) {
+        static Gc start() {
+            long count = 0;
+            long millis = 0;
+            for (GarbageCollectorMXBean gc : ManagementFactory.getGarbageCollectorMXBeans()) {
+                count += gc.getCollectionCount();
+                millis += gc.getCollectionTime();
+            }
+            return new Gc(count, millis);
+        }
+
+        void print() {
+            Gc now = start();
+            System.out.printf("  gc       %d collections, %d ms total%n", now.count - count, now.millis - millis);
+        }
     }
 
     static class Counter implements BookListener {
